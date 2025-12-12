@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Fryer Intelligence Dashboard v2 (Fixed)</title>
+  <style>
+    /* --- CSS VARIABLES & RESET --- */
+    :root {
+      --bg-color: #0d1117;
+      --card-bg: #161b22;
+      --text-color: #e6edf3;
+      --border-color: #30363d;
+      --accent-color: #58a6ff;
+      --btn-bg: #238636;
+      --btn-hover: #2ea043;
+      --header-bg: #161b22;
+    }
+
+    /* Light Mode Variables */
+    body.light {
+      --bg-color: #f6f8fa;
+      --card-bg: #ffffff;
+      --text-color: #24292f;
+      --border-color: #d0d7de;
+      --accent-color: #0969da;
+      --header-bg: #ffffff;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      margin: 0;
+      background: var(--bg-color);
+      color: var(--text-color);
+      transition: background 0.3s, color 0.3s;
+    }
+
+    /* --- LAYOUT --- */
+    header {
+      background: var(--header-bg);
+      padding: 20px;
+      text-align: center;
+      font-size: 24px;
+      font-weight: bold;
+      border-bottom: 1px solid var(--border-color);
+      transition: background 0.3s;
+    }
+
+    .container {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 20px;
+      padding: 20px;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    /* --- CARDS --- */
+    .card {
+      background: var(--card-bg);
+      padding: 20px;
+      border-radius: 12px;
+      box-shadow: 0 3px 6px rgba(0,0,0,0.04);
+      border: 1px solid var(--border-color);
+      transition: background 0.3s, border-color 0.3s;
+    }
+
+    .title {
+      font-size: 16px;
+      margin-bottom: 10px;
+      font-weight: 600;
+      color: var(--text-color);
+      opacity: 0.9;
+    }
+
+    #tempValue, #predictValue {
+      font-size: 36px;
+      font-weight: bold;
+      color: var(--accent-color);
+      font-family: 'Courier New', monospace;
+    }
+
+    .subtext {
+      margin-top: 8px;
+      font-size: 12px;
+      opacity: 0.7;
+    }
+
+    /* --- UI ELEMENTS --- */
+    button {
+      padding: 12px;
+      margin-top: 10px;
+      background: var(--btn-bg);
+      border: 1px solid rgba(27,31,36,0.15);
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+      color: white;
+      width: 100%;
+      transition: 0.2s;
+    }
+    button:hover {
+      background: var(--btn-hover);
+    }
+
+    canvas {
+      width: 100% !important;
+      max-height: 250px;
+    }
+
+    .status-online { color: #2ea043; font-weight:bold; }
+    .status-offline { color: #cf222e; font-weight:bold; }
+  </style>
+</head>
+<body>
+
+  <header>Fryer Intelligence Dashboard V2</header>
+  
+  <div class="container">
+    <div class="card">
+      <div class="title">Current Temperature</div>
+      <div id="tempValue">-- °C</div>
+      <div class="subtext">Live WebSocket Feed</div>
+    </div>
+
+    <div class="card">
+      <div class="title">AI Prediction (30s Ahead)</div>
+      <div id="predictValue">-- °C</div>
+      <div class="subtext">Linear Regression Model</div>
+    </div>
+
+    <div class="card" style="grid-column: span 1 / -1;">
+      <div class="title">Temperature Trend</div>
+      <canvas id="tempChart"></canvas>
+    </div>
+
+    <div class="card">
+      <div class="title">Control Panel</div>
+      <button onclick="toggleAlarm()">Toggle Alarm</button>
+      <button onclick="resetSystem()" style="background:#cf222e;">Reset System</button>
+      <button onclick="exportCSV()" style="background:#0969da;">Export CSV</button>
+      <button onclick="toggleDark()" style="background:#6e7681;">Switch Theme</button>
+    </div>
+
+    <div class="card">
+      <div class="title">System Status</div>
+      <div id="statusBox" style="font-size:18px; margin-top:10px;">Connecting...</div>
+      <div class="subtext" id="logCount">Records: 0</div>
+    </div>
+  </div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+  let chart;
+  let alarmEnabled = true;
+  let socket;
+  let dataLog = [];
+  
+  // Initialize Chart.js
+  function initChart() {
+    const ctx = document.getElementById("tempChart").getContext("2d");
+    
+    // Gradient fill for visual appeal
+    let gradient = ctx.createLinearGradient(0, 0, 0, 400);
+    gradient.addColorStop(0, 'rgba(88, 166, 255, 0.5)');
+    gradient.addColorStop(1, 'rgba(88, 166, 255, 0.0)');
+
+    chart = new Chart(ctx, {
+      type: "line",
+      data: {
+        labels: [],
+        datasets: [
+          {
+            label: "Actual Temp",
+            data: [],
+            borderColor: "#58a6ff",
+            backgroundColor: gradient,
+            borderWidth: 2,
+            pointRadius: 0, // Clean look
+            fill: true,
+            tension: 0.4 // Smooth curve
+          },
+          {
+            label: "AI Prediction",
+            data: [],
+            borderColor: "#2ea043",
+            borderDash: [5, 5],
+            borderWidth: 2,
+            pointRadius: 0,
+            fill: false
+          }
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        interaction: {
+          intersect: false,
+          mode: 'index',
+        },
+        scales: {
+          x: { 
+            grid: { display: false },
+            ticks: { display: false } 
+          },
+          y: { 
+            beginAtZero: false,
+            grid: { color: '#30363d' },
+            ticks: { color: '#8b949e' } 
+          },
+        },
+        plugins: {
+          legend: { labels: { color: '#8b949e' } }
+        }
+      },
+    });
+  }
+
+  function connectWebSocket() {
+    // Note: Ganti URL ini sesuai backend Anda. 
+    // Jika tidak ada backend, skrip ini akan mencoba reconnect terus menerus.
+    const wsUrl = "ws://" + window.location.host + "/ws";
+    
+    console.log("Attempting to connect to:", wsUrl);
+    socket = new WebSocket(wsUrl);
+
+    socket.onopen = () => {
+      document.getElementById("statusBox").innerHTML = `<span class='status-online'>● Online</span>`;
+    };
+
+    socket.onmessage = (msg) => {
+      try {
+        const data = JSON.parse(msg.data);
+        const temp = parseFloat(data.temp);
+
+        updateDashboard(temp);
+      } catch (e) {
+        console.error("Data error:", e);
+      }
+    };
+
+    socket.onclose = () => {
+      document.getElementById("statusBox").innerHTML = `<span class='status-offline'>● Disconnected</span>`;
+      // Auto-reconnect after 3 seconds
+      setTimeout(connectWebSocket, 3000);
+    };
+
+    socket.onerror = (err) => {
+      console.log("WebSocket Error. Is the server running?");
+      // Optional: Uncomment baris di bawah ini untuk mode DEMO jika server mati
+      // simulateDemoData(); 
+    };
+  }
+
+  function updateDashboard(temp) {
+    document.getElementById("tempValue").innerText = temp.toFixed(1) + " °C";
+
+    // AI Prediction Logic
+    const pred = predictTemperature(temp);
+    document.getElementById("predictValue").innerText = pred.toFixed(1) + " °C";
+
+    // Update Chart
+    chart.data.labels.push("");
+    chart.data.datasets[0].data.push(temp);
+    chart.data.datasets[1].data.push(pred);
+
+    // Keep chart clean (last 60 points)
+    if (chart.data.labels.length > 60) {
+      chart.data.labels.shift();
+      chart.data.datasets[0].data.shift();
+      chart.data.datasets[1].data.shift();
+    }
+    chart.update();
+
+    // Log Data (FIXED MEMORY LEAK)
+    dataLog.push({ ts: new Date().toISOString(), temp: temp, pred: pred });
+    if (dataLog.length > 2000) {
+      dataLog.shift(); // Remove oldest data
+    }
+    document.getElementById("logCount").innerText = `Records: ${dataLog.length}`;
+  }
+
+  // Improved Prediction Algorithm
+  function predictTemperature(currentTemp) {
+    const arr = chart.data.datasets[0].data;
+    if (arr.length < 5) return currentTemp;
+
+    const last = arr.slice(-5);
+    // Hitung rata-rata perubahan (slope) dari 5 titik terakhir (4 interval)
+    const slope = (last[4] - last[0]) / 4;
+    
+    // Prediksi 3 step ke depan (approx 30 detik)
+    return last[4] + (slope * 3);
+  }
+
+  /* --- Tombol Aksi --- */
+  function toggleAlarm() {
+    alarmEnabled = !alarmEnabled;
+    alert("Alarm state: " + alarmEnabled);
+    // fetch(`/api/alarm?state=${alarmEnabled}`); // Uncomment for backend
+  }
+
+  function resetSystem() {
+    if(confirm("Reset system configuration?")) {
+      // fetch(`/api/reset`); // Uncomment for backend
+      location.reload();
+    }
+  }
+
+  function exportCSV() {
+    if (dataLog.length === 0) {
+      alert("No data to export yet.");
+      return;
+    }
+    let csv = "timestamp,temp,prediction\n";
+    dataLog.forEach(r => {
+      csv += `${r.ts},${r.temp},${r.pred}\n`;
+    });
+
+    const blob = new Blob([csv], { type: "text/csv" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = "fryer_data_log.csv";
+    link.click();
+  }
+
+  function toggleDark() {
+    document.body.classList.toggle("light");
+    
+    // Update Chart Grid Colors based on theme
+    const isLight = document.body.classList.contains("light");
+    const gridColor = isLight ? '#d0d7de' : '#30363d';
+    const textColor = isLight ? '#57606a' : '#8b949e';
+
+    chart.options.scales.y.grid.color = gridColor;
+    chart.options.scales.y.ticks.color = textColor;
+    chart.update();
+  }
+
+  // --- DEMO MODE (Hapus function ini saat production) ---
+  function simulateDemoData() {
+    // Fungsi ini hanya berjalan jika socket error, untuk simulasi visual saja
+    let demoTemp = 160;
+    setInterval(() => {
+        let change = (Math.random() - 0.4); // Random fluctuation
+        demoTemp += change;
+        updateDashboard(demoTemp);
+        document.getElementById("statusBox").innerHTML = "<span style='color:orange'>● Demo Mode</span>";
+    }, 1000);
+  }
+
+  // Start System
+  initChart();
+  connectWebSocket();
+  
+  // UNCOMMENT baris di bawah ini jika ingin langsung melihat hasil tanpa Server Backend
+  // setTimeout(simulateDemoData, 1000); 
+
+</script>
+</body>
+</html>
